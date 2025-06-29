@@ -1,0 +1,181 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: QRFormify - Serverless QR Code Form Builder
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.9
+    Environment:
+      Variables:
+        FORMS_TABLE: !Ref FormsTable
+        SUBMISSIONS_TABLE: !Ref SubmissionsTable
+        CORS_ORIGIN: '*'
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    Description: The deployment stage
+
+Resources:
+  # DynamoDB Tables
+  FormsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub QRFormify-Forms-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: formId
+          AttributeType: S
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: formId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: EmailIndex
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  SubmissionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub QRFormify-Submissions-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: submissionId
+          AttributeType: S
+        - AttributeName: formId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: submissionId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: FormIndex
+          KeySchema:
+            - AttributeName: formId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  # API Gateway
+  QRFormifyApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Stage
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+
+  # Lambda Functions
+  CreateFormFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: create_form.lambda_handler
+      Events:
+        CreateForm:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QRFormifyApi
+            Path: /api/forms
+            Method: post
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FormsTable
+        - SESCrudPolicy:
+            IdentityName: "*"
+
+  GetFormFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: get_form.lambda_handler
+      Events:
+        GetForm:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QRFormifyApi
+            Path: /api/forms/{formId}
+            Method: get
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref FormsTable
+
+  SubmitFormFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: submit_form.lambda_handler
+      Events:
+        SubmitForm:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QRFormifyApi
+            Path: /api/forms/{formId}/submit
+            Method: post
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SubmissionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FormsTable
+        - SESCrudPolicy:
+            IdentityName: "*"
+
+  ViewSubmissionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: view_submissions.lambda_handler
+      Events:
+        ViewSubmissions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QRFormifyApi
+            Path: /form/{formId}/view
+            Method: get
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref SubmissionsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref FormsTable
+
+  FrontendFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: frontend.lambda_handler
+      Events:
+        Frontend:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QRFormifyApi
+            Path: /
+            Method: get
+        FormDisplay:
+          Type: Api
+          Properties:
+            RestApiId: !Ref QRFormifyApi
+            Path: /form/{formId}
+            Method: get
+
+
+Outputs:
+  ApiEndpoint:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${QRFormifyApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiEndpoint"
+
+  FormsTableName:
+    Description: "Forms DynamoDB table name"
+    Value: !Ref FormsTable
+
+  SubmissionsTableName:
+    Description: "Submissions DynamoDB table name"
+    Value: !Ref SubmissionsTable
